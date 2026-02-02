@@ -2,14 +2,6 @@
 
 A cross-platform C++ library for monitoring process CPU and memory statistics.
 
-## Features
-
-- Get CPU time and percentage for any process by PID
-- Get memory usage (resident set size) in MB
-- Get statistics for multiple processes as JSON
-- Supports macOS and Linux
-- Qt-based API using QHash, QString, etc.
-
 ## Building
 
 ### With Nix
@@ -60,7 +52,3 @@ delete[] json;
 // Clear internal CPU time history (useful for tests)
 ProcessStats::clearHistory();
 ```
-
-## License
-
-See LICENSE file.
