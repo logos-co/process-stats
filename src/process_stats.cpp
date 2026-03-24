@@ -142,8 +142,6 @@ namespace {
     }
 
     char* getModuleStats(const QHash<QString, qint64>& processes) {
-        qDebug() << "getModuleStats() called";
-        
         QJsonArray modulesArray;
         
     #ifndef Q_OS_IOS
@@ -185,11 +183,6 @@ namespace {
             moduleObj["memory_mb"] = stats.memoryMB;
             
             modulesArray.append(moduleObj);
-            
-            qDebug() << "Module stats for" << pluginName 
-                    << "- CPU:" << stats.cpuPercent << "%" 
-                    << "(" << stats.cpuTimeSeconds << "s),"
-                    << "Memory:" << stats.memoryMB << "MB";
         }
     #endif // Q_OS_IOS
         
@@ -200,8 +193,6 @@ namespace {
         // Allocate memory for the result string
         char* result = new char[jsonData.size() + 1];
         strcpy(result, jsonData.constData());
-        
-        qDebug() << "Returning module stats JSON for" << modulesArray.size() << "modules";
         
         return result;
     }
