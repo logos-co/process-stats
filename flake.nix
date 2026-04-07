@@ -10,11 +10,12 @@
     let
       systems = [ "aarch64-darwin" "x86_64-darwin" "aarch64-linux" "x86_64-linux" ];
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f {
+        inherit system;
         pkgs = import nixpkgs { inherit system; };
       });
     in
     {
-      packages = forAllSystems ({ pkgs }: 
+      packages = forAllSystems ({ pkgs, system }: 
         let
           # Common configuration
           common = import ./nix/default.nix { inherit pkgs; };
@@ -48,6 +49,22 @@
         }
       );
 
+      checks = forAllSystems ({ pkgs, system }:
+        let
+          testsPkg = self.packages.${system}.process-stats-tests;
+        in
+        {
+          tests = pkgs.runCommand "process-stats-tests" {
+            nativeBuildInputs = [ testsPkg ];
+          } ''
+            echo "Running process-stats tests..."
+            ${testsPkg}/bin/process_stats_tests
+            mkdir -p $out
+            touch $out/.tests-passed
+          '';
+        }
+      );
+
       devShells = forAllSystems ({ pkgs }: {
         default = pkgs.mkShell {
           nativeBuildInputs = [
@@ -56,7 +73,7 @@
             pkgs.pkg-config
           ];
           buildInputs = [
-            pkgs.qt6.qtbase
+            pkgs.nlohmann_json
             pkgs.gtest
           ];
         };

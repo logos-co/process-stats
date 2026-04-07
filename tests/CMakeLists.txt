@@ -8,7 +8,7 @@ target_link_libraries(process_stats_tests PRIVATE
     process_stats
     GTest::gtest
     GTest::gtest_main
-    Qt${QT_VERSION_MAJOR}::Core
+    nlohmann_json::nlohmann_json
 )
 
 target_include_directories(process_stats_tests PRIVATE
