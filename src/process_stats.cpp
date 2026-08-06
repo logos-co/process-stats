@@ -19,6 +19,9 @@
 #include <unistd.h>
 #include <fstream>
 #include <sstream>
+#elif defined(_WIN32)
+#include <windows.h>
+#include <psapi.h>
 #endif
 
 namespace ProcessStats {
@@ -106,6 +109,50 @@ ProcessStatsData getProcessStats(int64_t pid)
                 break;
             }
         }
+    }
+
+    const int64_t currentTime = now_ms();
+    {
+        std::lock_guard<std::mutex> lock(s_cache_mutex);
+        auto it = s_previous_cpu_times.find(pid);
+        if (it != s_previous_cpu_times.end()) {
+            const double timeDelta = (currentTime - it->second.second) / 1000.0;
+            const double cpuDelta = stats.cpuTimeSeconds - it->second.first;
+            if (timeDelta > 0)
+                stats.cpuPercent = (cpuDelta / timeDelta) * 100.0;
+        }
+        s_previous_cpu_times[pid] = {stats.cpuTimeSeconds, currentTime};
+    }
+
+#elif defined(_WIN32)
+    // PROCESS_QUERY_LIMITED_INFORMATION is the least privilege that reads
+    // another same-user process's times and memory without demanding debug
+    // rights; it also succeeds for elevated processes where the older
+    // PROCESS_QUERY_INFORMATION would not.
+    const HANDLE h = ::OpenProcess(
+        PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(pid));
+    if (h != nullptr) {
+        FILETIME creation{}, exit{}, kernel{}, user{};
+        if (::GetProcessTimes(h, &creation, &exit, &kernel, &user)) {
+            // FILETIME is a split 64-bit count of 100-nanosecond intervals, so
+            // recombine before scaling. Kernel+user matches what the Apple
+            // branch sums (system+user) and what Linux reads as stime+utime.
+            auto toSeconds = [](const FILETIME& ft) {
+                ULARGE_INTEGER u;
+                u.LowPart = ft.dwLowDateTime;
+                u.HighPart = ft.dwHighDateTime;
+                return static_cast<double>(u.QuadPart) / 1e7;
+            };
+            stats.cpuTimeSeconds = toSeconds(kernel) + toSeconds(user);
+        }
+
+        PROCESS_MEMORY_COUNTERS pmc{};
+        if (::GetProcessMemoryInfo(h, &pmc, sizeof(pmc))) {
+            // WorkingSetSize is the resident set: the Windows analogue of
+            // Apple's pti_resident_size and Linux's VmRSS.
+            stats.memoryMB = pmc.WorkingSetSize / (1024.0 * 1024.0);
+        }
+        ::CloseHandle(h);
     }
 
     const int64_t currentTime = now_ms();

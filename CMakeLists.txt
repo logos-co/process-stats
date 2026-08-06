@@ -14,6 +14,16 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 # Build src first
 add_subdirectory(src)
 
+# Tests are opt-out so a cross build can skip them entirely. Without this the
+# FetchContent fallback below fires whenever gtest is absent -- which under Nix
+# means trying to download googletest inside a sandbox with no network, and the
+# build dies on a confusing "downloading ... failed" rather than on the real
+# reason (there is no mingw gtest, and a PE test binary could not run here
+# anyway).
+option(PROCESS_STATS_BUILD_TESTS "Build the process-stats test suite" ON)
+
+if(PROCESS_STATS_BUILD_TESTS)
+
 # GoogleTest setup
 # Try to find GoogleTest via find_package first (for Nix and system installations)
 find_package(GTest QUIET)
@@ -35,6 +45,8 @@ include(GoogleTest)
 
 # Add tests subdirectory
 add_subdirectory(tests)
+
+endif()  # PROCESS_STATS_BUILD_TESTS
 
 # Install rules
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
