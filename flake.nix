@@ -13,9 +13,13 @@
         inherit system;
         pkgs = import nixpkgs { inherit system; };
       });
+
+      # Adds the "x86_64-windows" pseudo-system. PACKAGES only -- `checks` stay
+      # native because ctest cannot execute PE binaries on the build host.
+      forAllTargets = logos-nix.lib.forAllTargets;
     in
     {
-      packages = forAllSystems ({ pkgs, system }: 
+      packages = forAllTargets ({ pkgs, system }: 
         let
           # Common configuration
           common = import ./nix/default.nix { inherit pkgs; };
@@ -35,18 +39,19 @@
             paths = [ lib include ];
           };
         in
-        {
+        ({
           # Individual outputs
           process-stats-lib = lib;
           process-stats-include = include;
-          process-stats-tests = tests;
           
           # Combined output
           process-stats = process-stats;
           
           # Default package
           default = process-stats;
-        }
+        } // pkgs.lib.optionalAttrs (!pkgs.stdenv.hostPlatform.isWindows) {
+          process-stats-tests = tests;
+        })
       );
 
       checks = forAllSystems ({ pkgs, system }:
