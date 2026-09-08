@@ -203,6 +203,7 @@ char* getModuleStats(const std::unordered_map<std::string, int64_t>& processes)
         ProcessStatsData st = getProcessStats(pid);
         nlohmann::json moduleObj;
         moduleObj["name"] = pluginName;
+        moduleObj["pid"] = pid;
         moduleObj["cpu_percent"] = st.cpuPercent;
         moduleObj["cpu_time_seconds"] = st.cpuTimeSeconds;
         moduleObj["memory_mb"] = st.memoryMB;

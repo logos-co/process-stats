@@ -51,7 +51,7 @@ ProcessStats::ProcessStatsData stats = ProcessStats::getProcessStats(static_cast
 std::unordered_map<std::string, int64_t> processes;
 processes["my_process"] = static_cast<int64_t>(pid);
 char* json = ProcessStats::getModuleStats(processes);
-// Returns: [{"name":"my_process","cpu_percent":1.5,"cpu_time_seconds":10.2,"memory_mb":45.3}]
+// Returns: [{"name":"my_process","pid":1234,"cpu_percent":1.5,"cpu_time_seconds":10.2,"memory_mb":45.3}]
 delete[] json;
 
 // Clear internal CPU time history (useful for tests)
