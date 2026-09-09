@@ -171,11 +171,13 @@ TEST_F(ProcessStatsTest, GetModuleStats_ReturnsValidJsonStructure)
 
     auto moduleObj = doc[0];
     EXPECT_TRUE(moduleObj.contains("name"));
+    EXPECT_TRUE(moduleObj.contains("pid"));
     EXPECT_TRUE(moduleObj.contains("cpu_percent"));
     EXPECT_TRUE(moduleObj.contains("cpu_time_seconds"));
     EXPECT_TRUE(moduleObj.contains("memory_mb"));
 
     EXPECT_EQ(moduleObj["name"].get<std::string>(), "test_plugin");
+    EXPECT_EQ(moduleObj["pid"].get<int64_t>(), static_cast<int64_t>(pid));
     EXPECT_GE(moduleObj["cpu_percent"].get<double>(), 0.0);
     EXPECT_GE(moduleObj["cpu_time_seconds"].get<double>(), 0.0);
     EXPECT_GE(moduleObj["memory_mb"].get<double>(), 0.0);
