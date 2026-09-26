@@ -17,9 +17,18 @@
       # Adds the "x86_64-windows" pseudo-system. PACKAGES only -- `checks` stay
       # native because ctest cannot execute PE binaries on the build host.
       forAllTargets = logos-nix.lib.forAllTargets;
+
+      # Plus "aarch64-android", built like Windows: on the build system that
+      # logos-nix names for it.
+      forAllTargetsAndAndroid = f: forAllTargets f // {
+        aarch64-android = f {
+          system = "aarch64-android";
+          inherit (logos-nix.lib.mobileTargets.aarch64-android) pkgs;
+        };
+      };
     in
     {
-      packages = forAllTargets ({ pkgs, system }: 
+      packages = forAllTargetsAndAndroid ({ pkgs, system }: 
         let
           # Common configuration
           common = import ./nix/default.nix { inherit pkgs; };
@@ -49,7 +58,7 @@
           
           # Default package
           default = process-stats;
-        } // pkgs.lib.optionalAttrs (!pkgs.stdenv.hostPlatform.isWindows) {
+        } // pkgs.lib.optionalAttrs (pkgs.stdenv.buildPlatform.canExecute pkgs.stdenv.hostPlatform) {
           process-stats-tests = tests;
         })
       );
