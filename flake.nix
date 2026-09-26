@@ -2,7 +2,7 @@
   description = "Process statistics library for monitoring CPU and memory usage";
 
   inputs = {
-    logos-nix.url = "github:logos-co/logos-nix";
+    logos-nix.url = "github:logos-co/logos-nix/feat/standalone-apps";
     nixpkgs.follows = "logos-nix/nixpkgs";
   };
 
