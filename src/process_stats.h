@@ -6,9 +6,14 @@
 #include <unordered_map>
 
 namespace ProcessStats {
+    /// All zero when the process cannot be read (exited, or no permission).
     struct ProcessStatsData {
+        /// Per core, as top and Activity Monitor report it (one busy core is
+        /// 100%), averaged since the previous call for this PID; 0 on the first.
         double cpuPercent = 0.0;
+        /// User + system CPU time since the process started.
         double cpuTimeSeconds = 0.0;
+        /// Resident set size.
         double memoryMB = 0.0;
     };
 

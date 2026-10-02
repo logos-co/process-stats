@@ -127,6 +127,71 @@ TEST_F(ProcessStatsTest, GetProcessStats_CpuPercentUpdatesOnSecondCall)
     EXPECT_GE(stats.cpuPercent, 0.0);
 }
 
+// One thread busy for a known wall time must account for about that much CPU
+// time. Catches unit errors, e.g. Mach ticks read as microseconds on macOS.
+TEST_F(ProcessStatsTest, GetProcessStats_CpuTimeMatchesBusyWallTime)
+{
+    const int64_t currentPid = static_cast<int64_t>(getpid());
+    const double before = ProcessStats::getProcessStats(currentPid).cpuTimeSeconds;
+
+    const auto start = std::chrono::steady_clock::now();
+    volatile double sum = 0.0;
+    while (std::chrono::steady_clock::now() - start < std::chrono::milliseconds(500))
+        sum += 0.1;
+    const double wall = std::chrono::duration<double>(
+                            std::chrono::steady_clock::now() - start).count();
+
+    const double used = ProcessStats::getProcessStats(currentPid).cpuTimeSeconds - before;
+
+    EXPECT_LE(used, wall * 1.5);
+    EXPECT_GE(used, wall * 0.1); // loose: a loaded CI machine can deschedule us
+}
+
+TEST_F(ProcessStatsTest, GetProcessStats_BusyChildReadsAboutOneCore)
+{
+    const pid_t pid = fork();
+    ASSERT_GE(pid, 0);
+    if (pid == 0) {
+        volatile double sum = 0.0;
+        for (;;)
+            sum += 0.1;
+    }
+    m_childPids.push_back(pid);
+
+    ProcessStats::getProcessStats(pid);
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    const ProcessStats::ProcessStatsData stats = ProcessStats::getProcessStats(pid);
+
+    EXPECT_LE(stats.cpuPercent, 150.0);
+    EXPECT_GE(stats.cpuPercent, 10.0); // loose: a loaded CI machine can deschedule it
+}
+
+TEST_F(ProcessStatsTest, GetProcessStats_ExitedProcessReadsZeroNotNegative)
+{
+    // Busy, so it has CPU time to subtract: an exited process must not read as
+    // (0 - previous) / elapsed, i.e. a large negative percent.
+    const pid_t pid = fork();
+    ASSERT_GE(pid, 0);
+    if (pid == 0) {
+        volatile double sum = 0.0;
+        for (;;)
+            sum += 0.1;
+    }
+    m_childPids.push_back(pid);
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    ASSERT_GT(ProcessStats::getProcessStats(pid).cpuTimeSeconds, 0.0);
+
+    kill(pid, SIGKILL);
+    int st = 0;
+    waitpid(pid, &st, 0);
+    m_childPids.clear();
+
+    const ProcessStats::ProcessStatsData stats = ProcessStats::getProcessStats(pid);
+    EXPECT_EQ(stats.cpuPercent, 0.0);
+    EXPECT_EQ(stats.cpuTimeSeconds, 0.0);
+    EXPECT_EQ(stats.memoryMB, 0.0);
+}
+
 TEST_F(ProcessStatsTest, GetModuleStats_ReturnsEmptyArrayWhenNoPlugins)
 {
     std::unordered_map<std::string, int64_t> emptyProcesses;
