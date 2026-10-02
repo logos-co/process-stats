@@ -11,6 +11,7 @@
 #if defined(__APPLE__) && !defined(__IOS__)
 #include <libproc.h>
 #include <mach/mach.h>
+#include <mach/mach_time.h>
 #include <mach/task_info.h>
 #include <sys/sysctl.h>
 #elif defined(__linux__)
@@ -27,8 +28,13 @@
 namespace ProcessStats {
 
 namespace {
+    struct CpuSample {
+        double cpuTimeSeconds;
+        std::chrono::steady_clock::time_point at;
+    };
+
     std::mutex s_cache_mutex;
-    std::unordered_map<int64_t, std::pair<double, int64_t>> s_previous_cpu_times;
+    std::unordered_map<int64_t, CpuSample> s_previous_cpu_times;
 }
 
 void clearHistory()
@@ -37,11 +43,39 @@ void clearHistory()
     s_previous_cpu_times.clear();
 }
 
-static int64_t now_ms()
+#if defined(__APPLE__) && !defined(__IOS__)
+// pti_total_user/system are Mach absolute-time ticks, not microseconds: 1 ns on
+// Intel, 125/3 ns on Apple Silicon.
+static double machTicksToSeconds(uint64_t ticks)
 {
-    return std::chrono::duration_cast<std::chrono::milliseconds>(
-               std::chrono::system_clock::now().time_since_epoch())
-        .count();
+    static const double nsPerTick = [] {
+        mach_timebase_info_data_t tb{};
+        if (mach_timebase_info(&tb) != KERN_SUCCESS || tb.denom == 0)
+            return 1.0;
+        return static_cast<double>(tb.numer) / tb.denom;
+    }();
+    return ticks * nsPerTick / 1e9;
+}
+#endif
+
+// Per-core percent since this PID's previous sample; 0 on the first one. Only
+// call with a successful read: a failed one would poison the next delta.
+static double cpuPercentSincePrevious(int64_t pid, double cpuTimeSeconds)
+{
+    const auto now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(s_cache_mutex);
+
+    double percent = 0.0;
+    auto it = s_previous_cpu_times.find(pid);
+    if (it != s_previous_cpu_times.end()) {
+        const double wall = std::chrono::duration<double>(now - it->second.at).count();
+        const double cpu = cpuTimeSeconds - it->second.cpuTimeSeconds;
+        // cpu < 0 means the PID now belongs to a different process: rebaseline.
+        if (wall > 0 && cpu >= 0)
+            percent = cpu / wall * 100.0;
+    }
+    s_previous_cpu_times[pid] = {cpuTimeSeconds, now};
+    return percent;
 }
 
 ProcessStatsData getProcessStats(int64_t pid)
@@ -57,21 +91,9 @@ ProcessStatsData getProcessStats(int64_t pid)
 
     if (ret == sizeof(taskInfo)) {
         uint64_t totalTime = taskInfo.pti_total_user + taskInfo.pti_total_system;
-        stats.cpuTimeSeconds = totalTime / 1e6;
+        stats.cpuTimeSeconds = machTicksToSeconds(totalTime);
         stats.memoryMB = taskInfo.pti_resident_size / (1024.0 * 1024.0);
-
-        const int64_t currentTime = now_ms();
-        {
-            std::lock_guard<std::mutex> lock(s_cache_mutex);
-            auto it = s_previous_cpu_times.find(pid);
-            if (it != s_previous_cpu_times.end()) {
-                const double timeDelta = (currentTime - it->second.second) / 1000.0;
-                const double cpuDelta = stats.cpuTimeSeconds - it->second.first;
-                if (timeDelta > 0)
-                    stats.cpuPercent = (cpuDelta / timeDelta) * 100.0;
-            }
-            s_previous_cpu_times[pid] = {stats.cpuTimeSeconds, currentTime};
-        }
+        stats.cpuPercent = cpuPercentSincePrevious(pid, stats.cpuTimeSeconds);
     }
 
 #elif defined(__linux__)
@@ -82,15 +104,19 @@ ProcessStatsData getProcessStats(int64_t pid)
     if (statFile.is_open()) {
         std::string line;
         std::getline(statFile, line);
-        std::istringstream iss(line);
+        // utime and stime are fields 14 and 15. Count from after comm's closing
+        // ')', since comm (field 2) may itself contain spaces.
+        const std::size_t commEnd = line.rfind(')');
+        std::istringstream iss(commEnd == std::string::npos ? std::string()
+                                                            : line.substr(commEnd + 1));
         std::string token;
-        for (int i = 0; i < 14 && iss >> token; ++i) {
+        for (int field = 3; field < 14 && iss >> token; ++field) {
         }
         unsigned long utime = 0, stime = 0;
-        if (iss >> utime && iss >> stime) {
-            const long clockTicks = sysconf(_SC_CLK_TCK);
-            if (clockTicks > 0)
-                stats.cpuTimeSeconds = (utime + stime) / static_cast<double>(clockTicks);
+        const long clockTicks = sysconf(_SC_CLK_TCK);
+        if (iss >> utime && iss >> stime && clockTicks > 0) {
+            stats.cpuTimeSeconds = (utime + stime) / static_cast<double>(clockTicks);
+            stats.cpuPercent = cpuPercentSincePrevious(pid, stats.cpuTimeSeconds);
         }
     }
 
@@ -100,28 +126,13 @@ ProcessStatsData getProcessStats(int64_t pid)
         while (std::getline(statusFile, line)) {
             if (line.rfind("VmRSS:", 0) == 0) {
                 std::istringstream iss(line);
-                std::string label, value, unit;
-                iss >> label >> value >> unit;
-                if (!value.empty()) {
-                    const double memoryKB = std::stod(value);
+                std::string label;
+                double memoryKB = 0.0;
+                if (iss >> label >> memoryKB && memoryKB > 0)
                     stats.memoryMB = memoryKB / 1024.0;
-                }
                 break;
             }
         }
-    }
-
-    const int64_t currentTime = now_ms();
-    {
-        std::lock_guard<std::mutex> lock(s_cache_mutex);
-        auto it = s_previous_cpu_times.find(pid);
-        if (it != s_previous_cpu_times.end()) {
-            const double timeDelta = (currentTime - it->second.second) / 1000.0;
-            const double cpuDelta = stats.cpuTimeSeconds - it->second.first;
-            if (timeDelta > 0)
-                stats.cpuPercent = (cpuDelta / timeDelta) * 100.0;
-        }
-        s_previous_cpu_times[pid] = {stats.cpuTimeSeconds, currentTime};
     }
 
 #elif defined(_WIN32)
@@ -144,6 +155,7 @@ ProcessStatsData getProcessStats(int64_t pid)
                 return static_cast<double>(u.QuadPart) / 1e7;
             };
             stats.cpuTimeSeconds = toSeconds(kernel) + toSeconds(user);
+            stats.cpuPercent = cpuPercentSincePrevious(pid, stats.cpuTimeSeconds);
         }
 
         PROCESS_MEMORY_COUNTERS pmc{};
@@ -155,21 +167,11 @@ ProcessStatsData getProcessStats(int64_t pid)
         ::CloseHandle(h);
     }
 
-    const int64_t currentTime = now_ms();
-    {
-        std::lock_guard<std::mutex> lock(s_cache_mutex);
-        auto it = s_previous_cpu_times.find(pid);
-        if (it != s_previous_cpu_times.end()) {
-            const double timeDelta = (currentTime - it->second.second) / 1000.0;
-            const double cpuDelta = stats.cpuTimeSeconds - it->second.first;
-            if (timeDelta > 0)
-                stats.cpuPercent = (cpuDelta / timeDelta) * 100.0;
-        }
-        s_previous_cpu_times[pid] = {stats.cpuTimeSeconds, currentTime};
-    }
-
 #else
-    std::fprintf(stderr, "process-stats: process monitoring not supported on this platform\n");
+    static std::once_flag warned;
+    std::call_once(warned, [] {
+        std::fprintf(stderr, "process-stats: process monitoring not supported on this platform\n");
+    });
 #endif
 
     return stats;
