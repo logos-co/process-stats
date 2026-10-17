@@ -8,12 +8,20 @@
 #include <unordered_map>
 #include <unordered_set>
 
-#if defined(__APPLE__) && !defined(__IOS__)
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+
+#if defined(__APPLE__) && TARGET_OS_OSX
 #include <libproc.h>
 #include <mach/mach.h>
 #include <mach/mach_time.h>
 #include <mach/task_info.h>
 #include <sys/sysctl.h>
+#elif defined(__APPLE__) && TARGET_OS_IPHONE
+#include <mach/mach.h>
+#include <sys/resource.h>
+#include <unistd.h>
 #elif defined(__linux__)
 #include <sys/resource.h>
 #include <sys/times.h>
@@ -43,7 +51,7 @@ void clearHistory()
     s_previous_cpu_times.clear();
 }
 
-#if defined(__APPLE__) && !defined(__IOS__)
+#if defined(__APPLE__) && TARGET_OS_OSX
 // pti_total_user/system are Mach absolute-time ticks, not microseconds: 1 ns on
 // Intel, 125/3 ns on Apple Silicon.
 static double machTicksToSeconds(uint64_t ticks)
@@ -85,7 +93,7 @@ ProcessStatsData getProcessStats(int64_t pid)
     if (pid <= 0)
         return stats;
 
-#if defined(__APPLE__) && !defined(__IOS__)
+#if defined(__APPLE__) && TARGET_OS_OSX
     struct proc_taskinfo taskInfo;
     int ret = proc_pidinfo(static_cast<int>(pid), PROC_PIDTASKINFO, 0, &taskInfo, sizeof(taskInfo));
 
@@ -94,6 +102,25 @@ ProcessStatsData getProcessStats(int64_t pid)
         stats.cpuTimeSeconds = machTicksToSeconds(totalTime);
         stats.memoryMB = taskInfo.pti_resident_size / (1024.0 * 1024.0);
         stats.cpuPercent = cpuPercentSincePrevious(pid, stats.cpuTimeSeconds);
+    }
+
+#elif defined(__APPLE__) && TARGET_OS_IPHONE
+    // No libproc on iOS and a sandboxed app sees only itself, so any other pid
+    // stays unavailable (zeroed).
+    if (pid == static_cast<int64_t>(getpid())) {
+        struct rusage usage{};
+        if (getrusage(RUSAGE_SELF, &usage) == 0) {
+            auto toSeconds = [](const timeval& tv) { return tv.tv_sec + tv.tv_usec / 1e6; };
+            stats.cpuTimeSeconds = toSeconds(usage.ru_utime) + toSeconds(usage.ru_stime);
+            stats.cpuPercent = cpuPercentSincePrevious(pid, stats.cpuTimeSeconds);
+        }
+
+        mach_task_basic_info_data_t taskInfo{};
+        mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
+        if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO,
+                      reinterpret_cast<task_info_t>(&taskInfo), &count) == KERN_SUCCESS) {
+            stats.memoryMB = taskInfo.resident_size / (1024.0 * 1024.0);
+        }
     }
 
 #elif defined(__linux__)
